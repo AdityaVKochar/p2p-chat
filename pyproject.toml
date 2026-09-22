@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cnp2p"
+version = "0.2.0"
+description = "A small peer-to-peer chat and peer-discovery network"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "CN P2P Project" }]
+dependencies = ["cryptography>=42"]
+
+[project.scripts]
+cnp2p = "cnp2p.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
