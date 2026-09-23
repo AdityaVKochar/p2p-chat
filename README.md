@@ -23,12 +23,16 @@ ciphertext and cannot decrypt the conversation.
 - Persistent encrypted offline-message queues
 - Signed relay fetch and deletion requests
 - Optional RFC 5389 STUN endpoint diagnostics
+- Automatic UPnP IGD TCP mapping with renewal and clean shutdown
+- Minimal Electron desktop interface with an isolated renderer
+- Standalone Windows builds with the Python networking engine embedded
 - Bounded protocol frames, routing-table cleanup, and relay expiry limits
 
 ## Contents
 
 - [Requirements](#requirements)
-- [Installation](#installation)
+- [Desktop app](#desktop-app)
+- [Command-line installation](#command-line-installation)
 - [First local chat](#first-local-chat)
 - [Chat over a LAN](#chat-over-a-lan)
 - [Relay, NAT, and offline messaging](#relay-nat-and-offline-messaging)
@@ -47,6 +51,7 @@ ciphertext and cannot decrypt the conversation.
 - Python 3.11 or newer
 - `pip`
 - Git, if cloning from GitHub
+- Node.js 20 or newer and npm, only for the Electron app
 - A reachable TCP port for nodes accepting direct connections
 - A publicly reachable machine only when operating an Internet relay
 
@@ -60,12 +65,73 @@ Check the installed tools:
 python --version
 python -m pip --version
 git --version
+node --version
+npm --version
 ```
 
 On systems where Python 3 is invoked as `python3`, substitute `python3` for
 `python` in the commands below.
 
-## Installation
+## Desktop app
+
+The Electron app is the simplest way to use CNP2P. It keeps the interface to a
+small two-pane layout: peers on the left, the selected encrypted conversation
+on the right, and advanced network details in Settings.
+
+### Run from source on Windows
+
+```powershell
+git clone https://github.com/AdityaVKochar/p2p-chat.git
+cd p2p-chat
+
+python -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e ".[desktop]"
+
+npm install
+npm start
+```
+
+### Run from source on macOS or Linux
+
+```bash
+git clone https://github.com/AdityaVKochar/p2p-chat.git
+cd p2p-chat
+
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[desktop]"
+
+npm install
+npm start
+```
+
+On first launch, enter a display name. Open Settings to configure a bootstrap
+peer, encrypted relay, STUN server, LAN discovery, or automatic port mapping.
+
+### Build the Windows installer
+
+```powershell
+python -m pip install -e ".[desktop]"
+npm install
+npm run build:win
+```
+
+The NSIS installer is written to `release/`. PyInstaller first bundles the
+Python networking engine, cryptography library, and SQLite support; Electron
+then embeds that executable. Users of the finished Windows build do not need
+Python or Node.js.
+
+For a faster unpacked packaging check:
+
+```powershell
+npm run build:dir
+```
+
+## Command-line installation
 
 ### Windows PowerShell
 
@@ -184,9 +250,11 @@ port. LAN discovery uses UDP port `37020`.
 
 ## Relay, NAT, and offline messaging
 
-Direct TCP is always attempted first. A relay is used only when direct delivery
-fails. Both clients create outbound TCP connections to the relay, allowing the
-fallback path to work behind most NAT devices and restrictive inbound
+Direct TCP is always attempted first. With automatic port mapping enabled, a
+compatible UPnP IGD gateway maps the listening TCP port; CNP2P advertises the
+public endpoint, renews finite leases, and removes the mapping on clean
+shutdown. If that path fails, both clients create outbound TCP connections to
+the relay. This fallback works behind most NAT devices and restrictive inbound
 firewalls.
 
 ### 1. Start a relay
@@ -267,7 +335,8 @@ At the prompt:
 ```
 
 The result is diagnostic. This project does not implement direct ICE/TCP hole
-punching; the configured relay is the implemented cross-NAT delivery path.
+punching. UPnP is the automatic direct-mapping path, and the configured relay
+is the fallback when the gateway does not support mapping.
 
 ## Interactive commands
 
@@ -302,6 +371,7 @@ Quotes may be used when the shell-like command parser needs to preserve spaces:
 --relay HOST:PORT              Offline/NAT relay; may be repeated
 --relay-server                 Enable persistent relay service on this node
 --stun HOST:PORT               STUN server used by /nat
+--upnp                         Request automatic TCP mapping from the router
 --no-lan                       Disable UDP LAN discovery
 ```
 
@@ -316,7 +386,7 @@ cnp2p --help
 ```mermaid
 flowchart LR
     A["Alice node"] -->|"1. DHT lookup"| D["Known peers"]
-    A -->|"2. Encrypted direct TCP"| B["Bob node"]
+    A -->|"2. Direct or UPnP-mapped encrypted TCP"| B["Bob node"]
     B -->|"ACK"| A
     A -. "Direct path unavailable" .-> R["Ciphertext relay"]
     B -->|"Outbound authenticated poll"| R
@@ -401,12 +471,17 @@ The tests cover:
 - Message acknowledgements and duplicate suppression
 - Offline encrypted delivery through a persistent relay
 - Relay recovery after process restart
+- UPnP service discovery, public endpoint advertisement, and mapping cleanup
 - XOR-distance routing behavior
 
 Optional syntax compilation check:
 
 ```powershell
 python -m compileall -q src tests
+node --check desktop/main.js
+node --check desktop/preload.js
+node --check desktop/renderer/renderer.js
+npm audit
 ```
 
 ## Project structure
@@ -416,6 +491,15 @@ p2p-chat/
 ├── docs/
 │   ├── project-proposal.md
 │   └── security-model.md
+├── desktop/
+│   ├── assets/
+│   ├── renderer/
+│   ├── main.js
+│   └── preload.js
+├── scripts/
+│   ├── backend_entry.py
+│   ├── build-backend.js
+│   └── generate-icon.py
 ├── src/cnp2p/
 │   ├── cli.py
 │   ├── crypto.py
@@ -428,6 +512,8 @@ p2p-chat/
 │   ├── relay.py
 │   └── routing.py
 ├── tests/
+├── package.json
+├── package-lock.json
 ├── pyproject.toml
 └── README.md
 ```
@@ -466,6 +552,8 @@ cnp2p --name Bob --port 9102 --data-dir .demo/bob
 - Verify its TCP port is allowed through the firewall.
 - Configure the same reachable `--relay HOST:PORT` on both nodes when inbound
   connections are blocked.
+- Try `--upnp` or enable automatic port mapping in desktop Settings when the
+  router supports UPnP IGD.
 
 ### Offline messages are not received
 
@@ -518,4 +606,3 @@ This is an educational implementation, not a production messenger.
 
 For the academic abstract and objectives, see
 [`docs/project-proposal.md`](docs/project-proposal.md).
-

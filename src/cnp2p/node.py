@@ -23,6 +23,7 @@ from .crypto import (
 from .discovery import DiscoveryProtocol, start_discovery
 from .identity import load_or_create_identity
 from .models import ID_HEX_LENGTH, Peer, validate_node_id
+from .nat import PortMapping, UpnpError, create_upnp_tcp_mapping
 from .protocol import MAX_FRAME_BYTES, ProtocolError, encode_frame, read_frame, request
 from .relay import RelayStore, RelayStoreError
 from .routing import RoutingTable
@@ -69,9 +70,11 @@ class P2PNode:
         lan_discovery: bool = True,
         relay_enabled: bool = False,
         relay_endpoints: list[tuple[str, int]] | None = None,
+        upnp: bool = False,
         offline_poll_interval: float = 10.0,
         on_message: Callable[[dict[str, Any]], None] | None = None,
         on_peer: Callable[[Peer], None] | None = None,
+        on_status: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         if not 0 <= port <= 65535:
             raise ValueError("port must be between 0 and 65535")
@@ -80,13 +83,16 @@ class P2PNode:
         self.name = name[:64] or "anonymous"
         self.host = host
         self.port = port
+        self.advertise_port = port
         self.advertise_host = advertise_host or detect_lan_ip()
         self.lan_discovery = lan_discovery
         self.relay_enabled = relay_enabled
         self.relay_endpoints = list(relay_endpoints or [])
+        self.upnp_enabled = upnp
         self.offline_poll_interval = max(1.0, offline_poll_interval)
         self.on_message = on_message
         self.on_peer = on_peer
+        self.on_status = on_status
         self.routing = RoutingTable(self.node_id)
         self.relay_store = RelayStore(data_dir / "relay.sqlite3") if relay_enabled else None
 
@@ -95,13 +101,14 @@ class P2PNode:
         self._discovery_protocol: DiscoveryProtocol | None = None
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._seen_messages: OrderedDict[str, float] = OrderedDict()
+        self._port_mapping: PortMapping | None = None
 
     @property
     def peer(self) -> Peer:
         return Peer(
             node_id=self.node_id,
             host=self.advertise_host,
-            port=self.port,
+            port=self.advertise_port,
             name=self.name,
             last_seen=time.time(),
             signing_key=self.identity.signing_public_key,
@@ -123,6 +130,24 @@ class P2PNode:
         if not sockets:
             raise NodeError("server did not expose a listening socket")
         self.port = int(sockets[0].getsockname()[1])
+        self.advertise_port = self.port
+
+        if self.upnp_enabled:
+            try:
+                self._port_mapping = await create_upnp_tcp_mapping(
+                    detect_lan_ip(),
+                    self.port,
+                    preferred_external_port=self.port,
+                )
+                self.advertise_host = self._port_mapping.external_host
+                self.advertise_port = self._port_mapping.external_port
+                self._emit_status(
+                    "nat",
+                    "mapped",
+                    f"UPnP mapped TCP {self.advertise_host}:{self.advertise_port}",
+                )
+            except UpnpError as error:
+                self._emit_status("nat", "unavailable", str(error))
 
         if self.lan_discovery:
             try:
@@ -150,11 +175,19 @@ class P2PNode:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
+        if self._port_mapping is not None:
+            with suppress(UpnpError):
+                await asyncio.to_thread(self._port_mapping.delete)
+            self._port_mapping = None
 
     def _spawn(self, coroutine: Any) -> None:
         task = asyncio.create_task(coroutine)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+
+    def _emit_status(self, category: str, state: str, detail: str) -> None:
+        if self.on_status is not None:
+            self.on_status({"category": category, "state": state, "detail": detail})
 
     def _remember_peer(self, peer: Peer) -> None:
         if peer.node_id == self.node_id:
@@ -178,6 +211,17 @@ class P2PNode:
             self._purge_seen_messages()
             if self.relay_store is not None:
                 await asyncio.to_thread(self.relay_store.cleanup)
+            if (
+                self._port_mapping is not None
+                and self._port_mapping.lease_duration > 0
+                and time.time() - self._port_mapping.created_at
+                > self._port_mapping.lease_duration * 0.75
+            ):
+                try:
+                    await asyncio.to_thread(self._port_mapping.renew)
+                    self._emit_status("nat", "mapped", "UPnP port mapping renewed")
+                except UpnpError as error:
+                    self._emit_status("nat", "unavailable", str(error))
 
     async def _offline_poll_loop(self) -> None:
         await asyncio.sleep(1)

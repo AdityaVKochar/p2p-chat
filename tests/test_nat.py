@@ -2,12 +2,36 @@ import asyncio
 import socket
 import struct
 import threading
+from pathlib import Path
+import tempfile
 import unittest
 
-from cnp2p.nat import BINDING_RESPONSE, MAGIC_COOKIE, XOR_MAPPED_ADDRESS, discover_public_endpoint
+from cnp2p.nat import (
+    BINDING_RESPONSE,
+    MAGIC_COOKIE,
+    XOR_MAPPED_ADDRESS,
+    _service_from_description,
+    discover_public_endpoint,
+)
 
 
 class NatTests(unittest.TestCase):
+    def test_finds_wan_control_service_in_igd_description(self) -> None:
+        description = """<?xml version="1.0"?>
+        <root xmlns="urn:schemas-upnp-org:device-1-0">
+          <device><serviceList><service>
+            <serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>
+            <controlURL>/upnp/control/WANIPConn1</controlURL>
+          </service></serviceList></device>
+        </root>"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "device.xml"
+            path.write_text(description, encoding="utf-8")
+            control_url, service_type = _service_from_description(path.as_uri())
+
+        self.assertTrue(control_url.endswith("/upnp/control/WANIPConn1"))
+        self.assertEqual(service_type, "urn:schemas-upnp-org:service:WANIPConnection:1")
+
     def test_parses_rfc5389_xor_mapped_address(self) -> None:
         server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         server.bind(("127.0.0.1", 0))

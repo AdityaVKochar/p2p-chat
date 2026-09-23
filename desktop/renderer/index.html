@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'">
+    <title>CNP2P</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <aside class="sidebar">
+        <header class="brand-row">
+          <div class="brand-mark" aria-hidden="true">P</div>
+          <div>
+            <h1>CNP2P</h1>
+            <p>Private peer chat</p>
+          </div>
+          <button id="settings-button" class="icon-button" type="button" aria-label="Open settings" title="Settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.12 2.12-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.04 1.55V20.3h-3v-.09a1.7 1.7 0 0 0-1.04-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06-2.12-2.12.06-.06A1.7 1.7 0 0 0 7 15a1.7 1.7 0 0 0-1.55-1.04H5.3v-3h.15A1.7 1.7 0 0 0 7 9.92a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.12-2.12.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 11.7 4.7V4.6h3v.1a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.12 2.12-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.55 1.04h.15v3h-.15A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+          </button>
+        </header>
+
+        <div class="connection-row">
+          <span id="status-dot" class="status-dot offline"></span>
+          <span id="status-label">Offline</span>
+          <span id="peer-count" class="peer-count">0 peers</span>
+        </div>
+
+        <form id="connect-form" class="connect-form">
+          <label for="connect-address">Connect to a peer</label>
+          <div class="inline-field">
+            <input id="connect-address" type="text" autocomplete="off" placeholder="192.168.1.20:9000">
+            <button type="submit" aria-label="Connect">Connect</button>
+          </div>
+        </form>
+
+        <div class="section-label">Peers</div>
+        <div id="peer-list" class="peer-list" role="list"></div>
+        <div id="no-peers" class="no-peers">
+          <p>No peers yet</p>
+          <span>Use a bootstrap address or wait for LAN discovery.</span>
+        </div>
+
+        <footer class="identity-card">
+          <div class="avatar self-avatar" id="self-avatar">—</div>
+          <div class="identity-text">
+            <strong id="self-name">Not started</strong>
+            <button id="copy-id" type="button" disabled>Copy node ID</button>
+          </div>
+        </footer>
+      </aside>
+
+      <main class="chat-panel">
+        <div id="empty-state" class="empty-state">
+          <div class="empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M7 8h10M7 12h7m-9.5 7.2 1.1-3.3A8 8 0 1 1 20 11a8 8 0 0 1-12.7 6.5l-2.8 1.7Z"/></svg>
+          </div>
+          <h2>Your conversations</h2>
+          <p>Choose a peer to send an end-to-end encrypted message.</p>
+        </div>
+
+        <section id="conversation" class="conversation hidden" aria-label="Conversation">
+          <header class="conversation-header">
+            <div id="selected-avatar" class="avatar">?</div>
+            <div class="conversation-title">
+              <h2 id="selected-name">Peer</h2>
+              <p><span id="selected-endpoint"></span><span class="secure-label">Encrypted</span></p>
+            </div>
+            <button id="ping-button" class="secondary-button" type="button">Ping</button>
+          </header>
+          <div id="messages" class="messages" aria-live="polite"></div>
+          <form id="message-form" class="composer">
+            <textarea id="message-input" rows="1" maxlength="4096" placeholder="Write a message" aria-label="Message"></textarea>
+            <button id="send-button" class="send-button" type="submit" aria-label="Send message">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 17 8-17 8 3-8-3-8Zm3 8h14"/></svg>
+            </button>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <div id="scrim" class="scrim hidden"></div>
+    <aside id="settings-panel" class="settings-panel" aria-hidden="true">
+      <header>
+        <div>
+          <h2>Settings</h2>
+          <p>Identity and network</p>
+        </div>
+        <button id="close-settings" class="icon-button" type="button" aria-label="Close settings">×</button>
+      </header>
+      <form id="settings-form">
+        <div class="field-group">
+          <label for="setting-name">Display name</label>
+          <input id="setting-name" name="name" maxlength="64" required placeholder="Your name">
+        </div>
+        <div class="field-group compact-field">
+          <label for="setting-port">Listening port</label>
+          <input id="setting-port" name="port" type="number" min="0" max="65535" required>
+          <span>Use 0 to choose an available port automatically.</span>
+        </div>
+        <div class="field-group">
+          <label for="setting-bootstrap">Bootstrap node</label>
+          <input id="setting-bootstrap" name="bootstrap" placeholder="host:port">
+        </div>
+        <div class="field-group">
+          <label for="setting-relay">Relay</label>
+          <input id="setting-relay" name="relay" placeholder="host:port">
+          <span>Used for NAT fallback and offline delivery.</span>
+        </div>
+        <div class="field-group">
+          <label for="setting-stun">STUN server</label>
+          <div class="inline-field">
+            <input id="setting-stun" name="stun" placeholder="host:3478">
+            <button id="check-nat" class="field-button" type="button">Check</button>
+          </div>
+        </div>
+        <label class="toggle-row">
+          <span><strong>LAN discovery</strong><small>Find peers on this network</small></span>
+          <input id="setting-lan" name="lanDiscovery" type="checkbox">
+          <i></i>
+        </label>
+        <label class="toggle-row">
+          <span><strong>Automatic port mapping</strong><small>Use UPnP when the router supports it</small></span>
+          <input id="setting-upnp" name="upnp" type="checkbox">
+          <i></i>
+        </label>
+        <div class="settings-spacer"></div>
+        <button id="save-settings" class="primary-button" type="submit">Save and restart node</button>
+      </form>
+    </aside>
+
+    <div id="onboarding" class="onboarding hidden">
+      <div class="onboarding-card">
+        <div class="brand-mark large">P</div>
+        <h2>Start private chat</h2>
+        <p>Choose a name. Your cryptographic identity is created on this device.</p>
+        <form id="onboarding-form">
+          <label for="onboarding-name">Display name</label>
+          <input id="onboarding-name" maxlength="64" required autofocus placeholder="Your name">
+          <button class="primary-button" type="submit">Start</button>
+        </form>
+      </div>
+    </div>
+
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+    <script src="renderer.js"></script>
+  </body>
+</html>
+

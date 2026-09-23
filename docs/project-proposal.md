@@ -14,8 +14,10 @@ peer or discover nearby participants through UDP announcements. The protocol
 provides authenticated end-to-end encryption, delivery acknowledgements,
 bounded message frames, retry behavior, and duplicate suppression. When a
 direct route is unavailable because of NAT restrictions or temporary
-disconnection, an optional relay stores and forwards ciphertext without access
-to the message content. The project therefore provides a practical study of
+disconnection, the node first attempts automatic gateway port mapping and then
+uses an optional relay that stores and forwards ciphertext without access to
+the message content. A minimal Electron client presents these mechanisms
+through a conventional desktop chat interface. The project therefore provides a practical study of
 socket programming, distributed routing, applied cryptography, node discovery,
 NAT-aware communication, and resilient message delivery.
 
@@ -43,7 +45,8 @@ IDs, Ed25519 signatures, X25519 key agreement, ChaCha20-Poly1305 encryption,
 TCP request/response framing, delivery acknowledgements, retry behavior,
 duplicate suppression, manual bootstrap, UDP LAN discovery, iterative
 XOR-distance node lookup, RFC 5389 endpoint observation, and an optional
-persistent ciphertext relay. No authoritative peer directory exists.
+UPnP IGD TCP mapping, a persistent ciphertext relay, and an Electron desktop
+client with an isolated renderer. No authoritative peer directory exists.
 
 The DHT component is intentionally focused on node discovery. It does not store
 chat messages or arbitrary user data. A lookup asks the closest known nodes for
@@ -60,11 +63,11 @@ size and expiry.
 ## Current limitations
 
 Local-network discovery does not cross routers, and the implementation does not
-perform direct ICE-style hole punching. Instead, a configured public relay acts
-as the fallback path. Although the relay cannot decrypt content, it can observe
+perform direct ICE-style hole punching. A UPnP-compatible router can expose a
+direct TCP endpoint; otherwise a configured public relay acts as the fallback
+path. Although the relay cannot decrypt content, it can observe
 communication metadata. The static X25519 design also lacks forward secrecy
 following a long-term private-key compromise. Production deployment would
 require hardened key storage, revocation and device-management procedures,
 relay abuse controls, traffic-analysis countermeasures, and a formal security
 review.
-

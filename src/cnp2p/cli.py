@@ -83,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="HOST:PORT",
         help="RFC 5389 server used by /nat to observe the public UDP endpoint",
     )
+    parser.add_argument(
+        "--upnp",
+        action="store_true",
+        help="ask a compatible gateway to map the node's TCP port automatically",
+    )
     parser.add_argument("--no-lan", action="store_true", help="disable UDP LAN discovery")
     return parser
 
@@ -113,6 +118,7 @@ async def run(args: argparse.Namespace) -> int:
         lan_discovery=not args.no_lan,
         relay_enabled=args.relay_server,
         relay_endpoints=args.relay,
+        upnp=args.upnp,
         on_message=on_message,
     )
     try:
@@ -121,7 +127,7 @@ async def run(args: argparse.Namespace) -> int:
         print(f"Could not start node: {error}", file=sys.stderr)
         return 1
 
-    print(f"CNP2P node {node.name} is listening on {node.advertise_host}:{node.port}")
+    print(f"CNP2P node {node.name} is listening on {node.peer.host}:{node.peer.port}")
     print(f"Node ID: {node.node_id}")
     print("LAN discovery:", "disabled" if args.no_lan else "enabled when supported")
     print("Encryption: Ed25519 + X25519 + ChaCha20-Poly1305")

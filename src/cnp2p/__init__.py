@@ -4,4 +4,4 @@ from .models import Peer
 from .node import DeliveryReceipt, P2PNode
 
 __all__ = ["DeliveryReceipt", "P2PNode", "Peer"]
-__version__ = "0.2.0"
+__version__ = "0.3.0"

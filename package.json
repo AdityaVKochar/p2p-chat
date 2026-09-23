@@ -1,0 +1,46 @@
+{
+  "name": "cnp2p-desktop",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Minimal desktop client for the encrypted CNP2P network",
+  "author": "AdityaVKochar",
+  "main": "desktop/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "test:python": "python -m unittest discover -s tests -v",
+    "build:backend": "node scripts/build-backend.js",
+    "build:win": "npm run build:backend && electron-builder --win nsis",
+    "build:dir": "npm run build:backend && electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.cnp2p.chat",
+    "productName": "CNP2P",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/backend",
+        "to": "backend"
+      }
+    ],
+    "win": {
+      "icon": "desktop/assets/icon.ico",
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

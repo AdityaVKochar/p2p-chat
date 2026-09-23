@@ -28,6 +28,16 @@ connections. It is relay-assisted traversal, not direct peer-to-peer hole
 punching. A relay therefore needs a publicly reachable address or an
 administrator-configured port mapping.
 
+## NAT mapping
+
+When enabled, the node discovers a local UPnP Internet Gateway Device and asks
+it to map an external TCP port to the local listening socket. The public
+endpoint is then advertised in peer records. Finite leases are renewed, and
+the mapping is removed during clean shutdown. This mechanism depends on the
+local gateway's access controls; it does not weaken message encryption, but it
+does make the node's TCP listener reachable from the public endpoint. The
+encrypted relay remains the fallback when no compatible gateway is available.
+
 ## Security boundaries
 
 The relay and network observers can see node IDs, public keys, endpoints,
@@ -40,4 +50,3 @@ provide forward secrecy: compromise of a private key can expose previously
 captured messages. A production design should use an audited session protocol
 such as the Double Ratchet, secure operating-system key storage, key rotation,
 device verification, and stronger relay abuse controls.
-
