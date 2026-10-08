@@ -13,9 +13,9 @@ from typing import Any
 
 from .crypto import (
     CryptoError,
-    open_message,
+    open_payload,
     peer_record_signature,
-    seal_message,
+    seal_payload,
     signed_relay_action,
     verify_envelope_signature,
     verify_relay_action,
@@ -27,12 +27,18 @@ from .nat import PortMapping, UpnpError, create_upnp_tcp_mapping
 from .protocol import MAX_FRAME_BYTES, ProtocolError, encode_frame, read_frame, request
 from .relay import RelayStore, RelayStoreError
 from .routing import RoutingTable
+from .store import ChatStore
+from .transfer import DEFAULT_MAX_FILE_BYTES, TransferError, TransferManager
 
 
 MAX_CHAT_CHARACTERS = 4_096
 SEEN_MESSAGE_LIMIT = 2_048
 SEEN_MESSAGE_TTL = 3_600.0
 ROUTING_ENTRY_TTL = 30 * 60.0
+CONTACT_WRITE_INTERVAL = 30.0
+PRESENCE_INTERVAL = 30.0
+PRESENCE_PING_LIMIT = 32
+MAX_RECEIPT_IDS = 500
 
 
 class NodeError(Exception):
@@ -72,9 +78,12 @@ class P2PNode:
         relay_endpoints: list[tuple[str, int]] | None = None,
         upnp: bool = False,
         offline_poll_interval: float = 10.0,
+        history: bool = True,
+        max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
         on_message: Callable[[dict[str, Any]], None] | None = None,
         on_peer: Callable[[Peer], None] | None = None,
         on_status: Callable[[dict[str, Any]], None] | None = None,
+        on_update: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         if not 0 <= port <= 65535:
             raise ValueError("port must be between 0 and 65535")
@@ -93,8 +102,19 @@ class P2PNode:
         self.on_message = on_message
         self.on_peer = on_peer
         self.on_status = on_status
+        self.on_update = on_update
         self.routing = RoutingTable(self.node_id)
         self.relay_store = RelayStore(data_dir / "relay.sqlite3") if relay_enabled else None
+        # Conversation history and file transfers are local to this data
+        # directory. Pure relay or test nodes can disable them.
+        self.store = ChatStore(data_dir / "history.sqlite3") if history else None
+        self.transfers = (
+            TransferManager(self, data_dir / "attachments", max_file_bytes=max_file_bytes)
+            if self.store is not None
+            else None
+        )
+        self._contact_writes: dict[str, tuple[str, float]] = {}
+        self._unreachable: dict[str, float] = {}
 
         self._server: asyncio.Server | None = None
         self._discovery_transport: asyncio.DatagramTransport | None = None
@@ -153,7 +173,7 @@ class P2PNode:
             try:
                 self._discovery_transport, self._discovery_protocol = await start_discovery(
                     self.peer,
-                    self._remember_peer,
+                    lambda peer: self._remember_peer(peer, direct=True),
                 )
                 self._spawn(self._announcement_loop())
             except (OSError, ValueError, NotImplementedError):
@@ -161,8 +181,13 @@ class P2PNode:
                 self._discovery_protocol = None
         self._spawn(self._maintenance_loop())
         self._spawn(self._offline_poll_loop())
+        if self.store is not None:
+            self.store.interrupt_active_transfers()
+            self._spawn(self._presence_loop())
 
     async def stop(self) -> None:
+        if self.transfers is not None:
+            await self.transfers.stop()
         for task in tuple(self._background_tasks):
             task.cancel()
         if self._background_tasks:
@@ -189,14 +214,62 @@ class P2PNode:
         if self.on_status is not None:
             self.on_status({"category": category, "state": state, "detail": detail})
 
-    def _remember_peer(self, peer: Peer) -> None:
+    def _emit_update(self, update: dict[str, Any]) -> None:
+        if self.on_update is not None:
+            self.on_update(update)
+
+    def _remember_peer(self, peer: Peer, *, direct: bool = False) -> None:
+        """Add an authenticated peer record to the routing table and contacts.
+
+        *direct* means this node just exchanged traffic with the peer itself,
+        rather than learning its record from a third party, so the peer is
+        currently reachable and its contact "last seen" time is refreshed.
+        """
         if peer.node_id == self.node_id:
             return
         if not peer.is_authenticated:
             raise NodeError("refusing an unauthenticated peer record")
         self.routing.add(peer)
+        if direct:
+            self._unreachable.pop(peer.node_id, None)
+        if self.store is not None:
+            self._save_contact(peer, direct=direct)
         if self.on_peer is not None:
             self.on_peer(peer)
+
+    def _save_contact(self, peer: Peer, *, direct: bool) -> None:
+        assert self.store is not None
+        record = f"{peer.host}:{peer.port}:{peer.name}:{peer.relay}:{peer.encryption_key}"
+        previous = self._contact_writes.get(peer.node_id)
+        now = time.time()
+        if previous is not None and previous[0] == record:
+            if not direct or now - previous[1] < CONTACT_WRITE_INTERVAL:
+                return
+        last_direct = now if direct else (previous[1] if previous is not None else 0.0)
+        self.store.upsert_contact(peer, last_seen=last_direct)
+        self._contact_writes[peer.node_id] = (record, last_direct)
+        if direct and self.transfers is not None:
+            self.transfers.retry_for_peer(peer.node_id)
+
+    def _touch_peer(self, peer: Peer) -> None:
+        """Record a successful outbound exchange with *peer*."""
+        peer.last_seen = time.time()
+        self._remember_peer(peer, direct=True)
+
+    def mark_unreachable(self, node_id: str) -> None:
+        """Record a failed direct connection so presence shows the peer as offline."""
+        self._unreachable[node_id] = time.time()
+
+    def is_online(self, node_id: str, *, within: float = 120.0) -> bool:
+        if node_id in self._unreachable:
+            return False
+        written = self._contact_writes.get(node_id)
+        if written is not None and time.time() - written[1] < within:
+            return True
+        if self.store is None:
+            return False
+        contact = self.store.contact(node_id)
+        return contact is not None and time.time() - contact["last_seen"] < within
 
     async def _announcement_loop(self) -> None:
         while True:
@@ -222,6 +295,26 @@ class P2PNode:
                     self._emit_status("nat", "mapped", "UPnP port mapping renewed")
                 except UpnpError as error:
                     self._emit_status("nat", "unavailable", str(error))
+
+    async def _presence_loop(self) -> None:
+        """Periodically check conversation partners and resume waiting transfers."""
+        assert self.store is not None and self.transfers is not None
+        iteration = 0
+        while True:
+            await asyncio.sleep(PRESENCE_INTERVAL)
+            iteration += 1
+            if iteration % 2 == 0:
+                peer_ids = [entry["peer_id"] for entry in self.store.list_conversations()]
+                peers = [
+                    peer
+                    for peer_id in peer_ids[:PRESENCE_PING_LIMIT]
+                    if (peer := self.routing.get(peer_id) or self.store.get_contact(peer_id)) is not None
+                ]
+                results = await asyncio.gather(*(self.ping(peer) for peer in peers), return_exceptions=True)
+                for peer, result in zip(peers, results, strict=True):
+                    if isinstance(result, Exception):
+                        self.mark_unreachable(peer.node_id)
+            self.transfers.retry_all()
 
     async def _offline_poll_loop(self) -> None:
         await asyncio.sleep(1)
@@ -253,6 +346,8 @@ class P2PNode:
             NodeError,
             CryptoError,
             RelayStoreError,
+            TransferError,
+            OSError,
             ValueError,
             KeyError,
             TypeError,
@@ -273,7 +368,7 @@ class P2PNode:
         message_type = message["type"]
         if message_type == "HELLO":
             sender = self._peer_from_message(message, observed_host)
-            self._remember_peer(sender)
+            self._remember_peer(sender, direct=True)
             return {
                 "type": "HELLO_OK",
                 "peer": self.peer.to_dict(),
@@ -281,7 +376,7 @@ class P2PNode:
             }
         if message_type == "FIND_NODE":
             sender = self._peer_from_message(message, observed_host)
-            self._remember_peer(sender)
+            self._remember_peer(sender, direct=True)
             target_id = validate_node_id(str(message["target_id"]))
             candidates = [self.peer, *self.routing.all_peers()]
             unique: dict[str, Peer] = {peer.node_id: peer for peer in candidates}
@@ -299,7 +394,7 @@ class P2PNode:
             }
         if message_type == "PING":
             sender = self._peer_from_message(message, observed_host)
-            self._remember_peer(sender)
+            self._remember_peer(sender, direct=True)
             return {"type": "PONG", "peer": self.peer.to_dict()}
         if message_type == "RELAY_STORE":
             return await self._relay_store_message(message["envelope"])
@@ -307,6 +402,14 @@ class P2PNode:
             return await self._relay_fetch_messages(message, observed_host)
         if message_type == "RELAY_DELETE":
             return await self._relay_delete_messages(message, observed_host)
+        if message_type in {"FILE_OFFER", "FILE_CHUNK", "FILE_COMPLETE"}:
+            if self.transfers is None:
+                raise NodeError("this node does not accept files")
+            if message_type == "FILE_OFFER":
+                return self.transfers.handle_offer(message["envelope"], observed_host)
+            if message_type == "FILE_CHUNK":
+                return await self.transfers.handle_chunk(message)
+            return await self.transfers.handle_complete(message)
         raise NodeError(f"unknown message type: {message_type}")
 
     def _peer_from_message(self, message: dict[str, Any], observed_host: str | None) -> Peer:
@@ -319,29 +422,81 @@ class P2PNode:
         *,
         offline: bool,
     ) -> bool:
-        sender, text, sent_at = open_message(self.identity, envelope)
+        sender, payload, sent_at = open_payload(self.identity, envelope)
         if observed_host is not None:
             sender = Peer.from_dict(sender.to_dict(), observed_host=observed_host)
-        self._remember_peer(sender)
+        self._remember_peer(sender, direct=observed_host is not None)
         message_id = str(envelope["message_id"])
-        if not text or len(text) > MAX_CHAT_CHARACTERS:
-            raise NodeError(f"chat text must contain 1-{MAX_CHAT_CHARACTERS} characters")
+        kind = payload["kind"]
+        if kind == "text":
+            text = payload["text"]
+            if not text or len(text) > MAX_CHAT_CHARACTERS:
+                raise NodeError(f"chat text must contain 1-{MAX_CHAT_CHARACTERS} characters")
+        elif kind == "receipt":
+            if payload.get("status") not in {"delivered", "read"} or not isinstance(payload.get("message_ids"), list):
+                raise NodeError("malformed receipt")
+        else:
+            raise NodeError("files must be announced with a file offer")
+
         duplicate = message_id in self._seen_messages
-        if not duplicate:
-            self._seen_messages[message_id] = time.time()
-            self._purge_seen_messages()
-            if self.on_message is not None:
-                self.on_message(
-                    {
-                        "message_id": message_id,
-                        "sender": sender,
-                        "text": text,
-                        "sent_at": sent_at,
-                        "offline": offline,
-                        "encrypted": True,
-                    }
-                )
-        return duplicate
+        if duplicate:
+            return True
+        self._seen_messages[message_id] = time.time()
+        self._purge_seen_messages()
+        if kind == "receipt":
+            self._apply_receipt(sender, payload)
+            return False
+
+        message = {
+            "message_id": message_id,
+            "peer_id": sender.node_id,
+            "direction": "incoming",
+            "kind": "text",
+            "text": payload["text"],
+            "sent_at": sent_at,
+            "status": "received",
+            "mode": "relay" if offline else "direct",
+            "transfer": None,
+        }
+        if self.store is not None:
+            stored = self.store.add_message(
+                message_id=message_id,
+                peer_id=sender.node_id,
+                direction="incoming",
+                kind="text",
+                body=payload["text"],
+                sent_at=sent_at,
+                status="received",
+                mode=message["mode"],
+            )
+            if not stored:
+                return True
+        self._notify_message(message, sender, offline=offline)
+        if offline:
+            # A direct ACK already tells the sender the message arrived; a
+            # relayed message needs an explicit receipt.
+            self._spawn(self.send_receipt(sender.node_id, "delivered", [message_id]))
+        return False
+
+    def _notify_message(self, message: dict[str, Any] | None, sender: Peer, *, offline: bool) -> None:
+        if message is not None and self.on_message is not None:
+            self.on_message({**message, "sender": sender, "offline": offline, "encrypted": True})
+
+    def _apply_receipt(self, sender: Peer, payload: dict[str, Any]) -> None:
+        if self.store is None:
+            return
+        status = str(payload["status"])
+        message_ids = [str(value) for value in payload["message_ids"][:MAX_RECEIPT_IDS]]
+        changed = self.store.set_status(message_ids, status, peer_id=sender.node_id, direction="outgoing")
+        if changed:
+            self._emit_update(
+                {
+                    "type": "message_status",
+                    "peer_id": sender.node_id,
+                    "message_ids": changed,
+                    "status": status,
+                }
+            )
 
     async def _relay_store_message(self, envelope: dict[str, Any]) -> dict[str, Any]:
         if self.relay_store is None:
@@ -390,7 +545,7 @@ class P2PNode:
         if response.get("type") != "HELLO_OK":
             raise NodeError(str(response.get("error", "peer rejected the handshake")))
         direct_peer = Peer.from_dict(response["peer"], observed_host=host)
-        self._remember_peer(direct_peer)
+        self._remember_peer(direct_peer, direct=True)
         self._remember_node_records(response.get("nodes", []))
         await self.find_node(self.node_id)
         if direct_peer.relay:
@@ -467,11 +622,20 @@ class P2PNode:
         except ValueError as error:
             raise NodeError("node IDs contain only hexadecimal characters") from error
         if len(identifier) == ID_HEX_LENGTH:
-            peer = self.routing.get(identifier) or await self.find_node(identifier)
+            peer = (
+                self.routing.get(identifier)
+                or (self.store.get_contact(identifier) if self.store is not None else None)
+                or await self.find_node(identifier)
+            )
             if peer is None:
                 raise NodeError("peer could not be found in the network")
             return peer
-        matches = self.routing.find_prefix(identifier)
+        known = {peer.node_id: peer for peer in self.routing.find_prefix(identifier)}
+        if self.store is not None:
+            for contact in self.store.contacts():
+                if contact["peer"].node_id.startswith(identifier):
+                    known.setdefault(contact["peer"].node_id, contact["peer"])
+        matches = list(known.values())
         if not matches:
             raise NodeError("no known peer matches that ID prefix; use the full ID for a DHT lookup")
         if len(matches) > 1:
@@ -505,31 +669,113 @@ class P2PNode:
                 errors.append(str(error))
         raise NodeError("every configured relay rejected the message: " + "; ".join(errors))
 
+    async def _deliver(
+        self,
+        peer: Peer,
+        message_id: str,
+        payload: dict[str, Any],
+        *,
+        sent_at: float,
+        retries: int,
+    ) -> DeliveryReceipt:
+        envelope = seal_payload(self.identity, self.peer, peer, message_id, payload, sent_at=sent_at)
+        frame = {"type": "CHAT", "envelope": envelope}
+        for _ in range(retries + 1):
+            try:
+                response = await request(peer.host, peer.port, frame)
+                if response.get("type") == "ACK" and response.get("message_id") == message_id:
+                    self._touch_peer(peer)
+                    return DeliveryReceipt(message_id, "direct")
+                raise NodeError(str(response.get("error", "invalid acknowledgement")))
+            except (ConnectionError, NodeError, ProtocolError):
+                pass
+        self.mark_unreachable(peer.node_id)
+        relay = await self._queue_with_relay(envelope)
+        return DeliveryReceipt(message_id, "relay-queued", relay)
+
     async def send_message(
         self,
         identifier: str,
         text: str,
         *,
         retries: int = 1,
+        message_id: str | None = None,
     ) -> DeliveryReceipt:
         if not text or len(text) > MAX_CHAT_CHARACTERS:
             raise NodeError(f"chat text must contain 1-{MAX_CHAT_CHARACTERS} characters")
         peer = await self.resolve_peer(identifier)
-        message_id = secrets.token_hex(16)
-        envelope = seal_message(self.identity, self.peer, peer, message_id, text)
-        payload = {"type": "CHAT", "envelope": envelope}
-        for _ in range(retries + 1):
-            try:
-                response = await request(peer.host, peer.port, payload)
-                if response.get("type") == "ACK" and response.get("message_id") == message_id:
-                    peer.last_seen = time.time()
-                    self.routing.add(peer)
-                    return DeliveryReceipt(message_id, "direct")
-                raise NodeError(str(response.get("error", "invalid acknowledgement")))
-            except (ConnectionError, NodeError, ProtocolError):
-                pass
-        relay = await self._queue_with_relay(envelope)
-        return DeliveryReceipt(message_id, "relay-queued", relay)
+        message_id = message_id or secrets.token_hex(16)
+        sent_at = time.time()
+        if self.store is not None:
+            existing = self.store.get_message(message_id)
+            if existing is not None:
+                if existing["direction"] != "outgoing" or existing["peer_id"] != peer.node_id:
+                    raise NodeError("message ID is already in use")
+                sent_at = existing["sent_at"]
+                self.store.set_status([message_id], "pending", force=True)
+            else:
+                self.store.add_message(
+                    message_id=message_id,
+                    peer_id=peer.node_id,
+                    direction="outgoing",
+                    kind="text",
+                    body=text,
+                    sent_at=sent_at,
+                    status="pending",
+                )
+        try:
+            receipt = await self._deliver(peer, message_id, {"text": text}, sent_at=sent_at, retries=retries)
+        except (ConnectionError, NodeError, ProtocolError, CryptoError):
+            if self.store is not None:
+                self.store.set_status([message_id], "failed", force=True)
+            raise
+        if self.store is not None:
+            status = "delivered" if receipt.mode == "direct" else "queued"
+            self.store.set_status([message_id], status, mode=receipt.mode)
+        return receipt
+
+    async def retry_message(self, message_id: str) -> DeliveryReceipt | None:
+        """Resend a failed outgoing message, keeping its ID so peers deduplicate it."""
+        if self.store is None:
+            raise NodeError("message history is disabled")
+        message = self.store.get_message(message_id)
+        if message is None or message["direction"] != "outgoing":
+            raise NodeError("unknown outgoing message")
+        if message["kind"] == "file":
+            assert self.transfers is not None and message["transfer"] is not None
+            self.transfers.retry(message["transfer"]["transfer_id"])
+            return None
+        return await self.send_message(message["peer_id"], message["text"], message_id=message_id)
+
+    async def send_receipt(self, peer_id: str, status: str, message_ids: list[str]) -> None:
+        """Best-effort delivery or read receipt; failures are ignored."""
+        if not message_ids:
+            return
+        peer = self.routing.get(peer_id) or (self.store.get_contact(peer_id) if self.store else None)
+        if peer is None:
+            return
+        for start in range(0, len(message_ids), MAX_RECEIPT_IDS):
+            with suppress(ConnectionError, NodeError, ProtocolError, CryptoError):
+                await self._deliver(
+                    peer,
+                    secrets.token_hex(16),
+                    {"kind": "receipt", "status": status, "message_ids": message_ids[start:start + MAX_RECEIPT_IDS]},
+                    sent_at=time.time(),
+                    retries=0,
+                )
+
+    def mark_read(self, peer_id: str, *, send_receipt: bool = True) -> list[str]:
+        if self.store is None:
+            return []
+        message_ids = self.store.mark_read(peer_id)
+        if message_ids and send_receipt:
+            self._spawn(self.send_receipt(peer_id, "read", message_ids))
+        return message_ids
+
+    async def send_file(self, identifier: str, path: Path) -> dict[str, Any]:
+        if self.transfers is None:
+            raise NodeError("file transfer requires message history")
+        return await self.transfers.send_file(identifier, path)
 
     async def fetch_offline_messages(
         self,
@@ -596,6 +842,5 @@ class P2PNode:
         )
         if response.get("type") != "PONG":
             raise NodeError("peer returned an invalid ping response")
-        peer.last_seen = time.time()
-        self.routing.add(peer)
+        self._touch_peer(peer)
         return (time.perf_counter() - started) * 1_000

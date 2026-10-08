@@ -127,8 +127,74 @@ class NetworkTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.received[-1]["text"], "read this after reconnecting")
             self.assertTrue(self.received[-1]["offline"])
             self.assertEqual(relay.relay_store.count(self.alice.node_id), 0)  # type: ignore[union-attr]
+
+            # Alice's delivery receipt travels back to Bob.
+            await self.bob.fetch_offline_messages()
+            for _ in range(100):
+                if self.bob.store.get_message(receipt.message_id)["status"] == "delivered":
+                    break
+                await asyncio.sleep(0.02)
+                await self.bob.fetch_offline_messages()
+            self.assertEqual(self.bob.store.get_message(receipt.message_id)["status"], "delivered")
         finally:
             await relay.stop()
+
+    async def test_history_receipts_and_contacts_persist(self) -> None:
+        updates: list[dict[str, object]] = []
+        self.bob.on_update = updates.append
+        await self.bob.bootstrap("127.0.0.1", self.alice.port)
+        receipt = await self.bob.send_message(self.alice.node_id, "persist me")
+
+        sent = self.bob.store.get_message(receipt.message_id)
+        self.assertEqual(sent["status"], "delivered")
+        self.assertEqual(self.alice.store.history(self.bob.node_id)[0]["text"], "persist me")
+        self.assertEqual(self.alice.store.unread_total(), 1)
+
+        self.assertEqual(self.alice.mark_read(self.bob.node_id), [receipt.message_id])
+        for _ in range(100):
+            if self.bob.store.get_message(receipt.message_id)["status"] == "read":
+                break
+            await asyncio.sleep(0.02)
+        self.assertEqual(self.bob.store.get_message(receipt.message_id)["status"], "read")
+        self.assertIn("message_status", [update["type"] for update in updates])
+
+        # After a restart the routing table is empty, but Bob is still a contact.
+        await self.alice.stop()
+        self.alice = P2PNode(
+            name="Alice",
+            port=0,
+            advertise_host="127.0.0.1",
+            data_dir=self.root / "alice",
+            lan_discovery=False,
+        )
+        await self.alice.start()
+        self.assertEqual(len(self.alice.routing), 0)
+        peer = await self.alice.resolve_peer(self.bob.node_id[:10])
+        self.assertEqual(peer.node_id, self.bob.node_id)
+        reply = await self.alice.send_message(self.bob.node_id, "still here")
+        self.assertEqual(reply.mode, "direct")
+
+    async def test_failed_message_can_be_retried(self) -> None:
+        await self.bob.bootstrap("127.0.0.1", self.alice.port)
+        alice_port = self.alice.port
+        await self.alice.stop()
+        with self.assertRaises(Exception):
+            await self.bob.send_message(self.alice.node_id, "try again", retries=0)
+        failed = self.bob.store.history(self.alice.node_id)[-1]
+        self.assertEqual(failed["status"], "failed")
+
+        self.alice = P2PNode(
+            name="Alice",
+            port=alice_port,
+            advertise_host="127.0.0.1",
+            data_dir=self.root / "alice",
+            lan_discovery=False,
+            on_message=self.received.append,
+        )
+        await self.alice.start()
+        await self.bob.retry_message(failed["message_id"])
+        self.assertEqual(self.bob.store.get_message(failed["message_id"])["status"], "delivered")
+        self.assertEqual(self.received[-1]["text"], "try again")
 
 
 if __name__ == "__main__":

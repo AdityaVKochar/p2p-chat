@@ -8,10 +8,12 @@ import shlex
 import sys
 import time
 
+from .crypto import safety_number
 from .models import Peer
 from .nat import StunError, discover_public_endpoint
 from .node import NodeError, P2PNode
 from .protocol import ProtocolError
+from .transfer import TransferError
 
 
 HELP = """Commands:
@@ -20,6 +22,9 @@ HELP = """Commands:
   /connect HOST:PORT          bootstrap through a known node
   /find NODE_ID               perform a DHT lookup using a full node ID
   /msg ID_OR_PREFIX MESSAGE   send a direct message
+  /file ID_OR_PREFIX PATH     send an encrypted file directly to a peer
+  /history ID_OR_PREFIX [N]   show the last N messages with a peer (default 20)
+  /verify ID_OR_PREFIX        show the safety number to compare with a peer
   /ping ID_OR_PREFIX          measure reachability and round-trip time
   /offline                    fetch queued messages from configured relays
   /nat                        ask the configured STUN server for the public UDP endpoint
@@ -100,14 +105,32 @@ def render_peer(peer: Peer) -> str:
 async def run(args: argparse.Namespace) -> int:
     prompt_ready = asyncio.Event()
 
+    def show(line: str) -> None:
+        print(f"\n{line}")
+        if prompt_ready.is_set():
+            print("cnp2p> ", end="", flush=True)
+
     def on_message(message: dict[str, object]) -> None:
         sender = message["sender"]
         assert isinstance(sender, Peer)
         sent_at = datetime.fromtimestamp(float(message["sent_at"])).strftime("%H:%M:%S")
         route = " via offline relay" if message.get("offline") else ""
-        print(f"\n[{sent_at}] {sender.name} ({sender.short_id}){route}: {message['text']}")
-        if prompt_ready.is_set():
-            print("cnp2p> ", end="", flush=True)
+        if message.get("kind") == "file":
+            show(f"[{sent_at}] {sender.name} ({sender.short_id}) is sending the file {message['text']}")
+        else:
+            show(f"[{sent_at}] {sender.name} ({sender.short_id}){route}: {message['text']}")
+
+    def on_update(update: dict[str, object]) -> None:
+        if update["type"] == "transfer":
+            transfer = update["transfer"]
+            assert isinstance(transfer, dict)
+            if transfer["status"] == "done":
+                verb = "Received" if transfer["direction"] == "incoming" else "Delivered"
+                show(f"{verb} file {transfer['name']} ({transfer['path']})")
+            elif transfer["status"] == "failed":
+                show(f"File transfer {transfer['name']} failed: {transfer['error']}")
+        elif update["type"] == "message_status" and update["status"] == "read":
+            show(f"Read by recipient: {len(update['message_ids'])} message(s)")  # type: ignore[arg-type]
 
     node = P2PNode(
         name=args.name,
@@ -120,6 +143,7 @@ async def run(args: argparse.Namespace) -> int:
         relay_endpoints=args.relay,
         upnp=args.upnp,
         on_message=on_message,
+        on_update=on_update,
     )
     try:
         await node.start()
@@ -191,6 +215,24 @@ async def run(args: argparse.Namespace) -> int:
                             f"Recipient is unreachable; encrypted message queued at "
                             f"{receipt.relay} ({receipt.message_id[:8]})."
                         )
+                elif command == "/file" and len(parts) == 3:
+                    message = await node.send_file(parts[1], Path(parts[2]))
+                    print(f"Sending {message['text']}; you will be told when it is delivered.")
+                elif command == "/history" and len(parts) in {2, 3}:
+                    peer = await node.resolve_peer(parts[1])
+                    limit = int(parts[2]) if len(parts) == 3 else 20
+                    assert node.store is not None
+                    for item in node.store.history(peer.node_id, limit=limit):
+                        when = datetime.fromtimestamp(item["sent_at"]).strftime("%Y-%m-%d %H:%M")
+                        who = "you" if item["direction"] == "outgoing" else peer.name
+                        body = f"[file] {item['text']}" if item["kind"] == "file" else item["text"]
+                        print(f"[{when}] {who}: {body}  ({item['status']})")
+                    node.mark_read(peer.node_id)
+                elif command == "/verify" and len(parts) == 2:
+                    peer = await node.resolve_peer(parts[1])
+                    print(f"Safety number with {peer.name}:")
+                    print(safety_number(node.identity.signing_public_key, peer.signing_key))
+                    print("Compare it with your contact over a trusted channel.")
                 elif command == "/ping" and len(parts) == 2:
                     peer = await node.resolve_peer(parts[1])
                     milliseconds = await node.ping(peer)
@@ -209,6 +251,7 @@ async def run(args: argparse.Namespace) -> int:
             except (
                 ConnectionError,
                 NodeError,
+                TransferError,
                 ProtocolError,
                 StunError,
                 ValueError,

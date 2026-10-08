@@ -1,22 +1,27 @@
 {
   "name": "cnp2p-desktop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Minimal desktop client for the encrypted CNP2P network",
+  "description": "Desktop client for the encrypted CNP2P peer-to-peer chat network",
   "author": "AdityaVKochar",
   "main": "desktop/main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
+    "test": "npm run test:python && npm run check:js",
     "test:python": "python -m unittest discover -s tests -v",
+    "check:js": "node -e \"for (const f of ['desktop/main.js','desktop/preload.js','desktop/renderer/util.js','desktop/renderer/state.js','desktop/renderer/chat.js','desktop/renderer/renderer.js']) require('node:child_process').execFileSync(process.execPath, ['--check', f], { stdio: 'inherit' })\"",
     "build:backend": "node scripts/build-backend.js",
-    "build:win": "npm run build:backend && electron-builder --win nsis",
-    "build:dir": "npm run build:backend && electron-builder --dir"
+    "build:win": "npm run build:backend && electron-builder --win nsis --publish never",
+    "build:linux": "npm run build:backend && electron-builder --linux AppImage deb --publish never",
+    "build:dir": "npm run build:backend && electron-builder --dir --publish never"
   },
   "devDependencies": {
     "electron": "44.4.5",
     "electron-builder": "26.15.3"
   },
+  "homepage": "https://github.com/AdityaVKochar/p2p-chat",
+  "desktopName": "cnp2p-desktop.desktop",
   "build": {
     "appId": "com.cnp2p.chat",
     "productName": "CNP2P",
@@ -36,11 +41,23 @@
     ],
     "win": {
       "icon": "desktop/assets/icon.ico",
-      "target": "nsis"
+      "target": "nsis",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "icon": "desktop/assets/icon.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Network",
+      "maintainer": "AdityaVKochar",
+      "synopsis": "Encrypted peer-to-peer chat and file sharing",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   }
 }

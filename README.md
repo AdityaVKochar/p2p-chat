@@ -2,8 +2,8 @@
 
 CNP2P is an educational peer-to-peer chat application written in Python. Every
 running instance is a network node: it accepts connections, discovers peers,
-answers distributed lookups, and sends end-to-end encrypted messages directly
-whenever the destination is reachable.
+answers distributed lookups, and sends end-to-end encrypted messages, images,
+and files directly whenever the destination is reachable.
 
 When direct delivery is blocked by NAT or the recipient is offline, the sender
 can place the encrypted envelope on a configured relay. The relay stores only
@@ -16,6 +16,11 @@ ciphertext and cannot decrypt the conversation.
 - X25519 key agreement with HKDF-SHA256 key derivation
 - ChaCha20-Poly1305 authenticated message encryption
 - Direct TCP delivery with acknowledgements and retries
+- Delivered and read receipts (read receipts can be turned off)
+- Encrypted image and file sharing with progress, resume, and integrity checks
+- Automatic resend of files when an offline recipient comes back
+- Persistent local conversation history and contacts
+- Invite codes, nicknames, and safety numbers for contact verification
 - Duplicate-message suppression
 - Manual bootstrap and UDP local-network discovery
 - Kademlia-inspired routing and iterative node lookup
@@ -24,8 +29,10 @@ ciphertext and cannot decrypt the conversation.
 - Signed relay fetch and deletion requests
 - Optional RFC 5389 STUN endpoint diagnostics
 - Automatic UPnP IGD TCP mapping with renewal and clean shutdown
-- Minimal Electron desktop interface with an isolated renderer
-- Standalone Windows builds with the Python networking engine embedded
+- Electron desktop app with an isolated renderer: unread badges, desktop
+  notifications, drag-and-drop and pasted images, inline image previews,
+  and light and dark themes
+- Standalone Windows and Linux builds with the Python networking engine embedded
 - Bounded protocol frames, routing-table cleanup, and relay expiry limits
 
 ## Contents
@@ -33,6 +40,7 @@ ciphertext and cannot decrypt the conversation.
 - [Requirements](#requirements)
 - [Desktop app](#desktop-app)
 - [Command-line installation](#command-line-installation)
+- [Sharing images and files](#sharing-images-and-files)
 - [First local chat](#first-local-chat)
 - [Chat over a LAN](#chat-over-a-lan)
 - [Relay, NAT, and offline messaging](#relay-nat-and-offline-messaging)
@@ -45,6 +53,7 @@ ciphertext and cannot decrypt the conversation.
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 - [Limitations](#limitations)
+- [Roadmap](#roadmap)
 
 ## Requirements
 
@@ -74,9 +83,21 @@ On systems where Python 3 is invoked as `python3`, substitute `python3` for
 
 ## Desktop app
 
-The Electron app is the simplest way to use CNP2P. It keeps the interface to a
-small two-pane layout: peers on the left, the selected encrypted conversation
-on the right, and advanced network details in Settings.
+The Electron app is the simplest way to use CNP2P. It uses a two-pane layout.
+Conversations and nearby peers are on the left, and the selected encrypted
+conversation is on the right. Network options are in Settings.
+
+- **Add contact** (the `+` button) accepts an invite code or a plain
+  `host:port`. Copy your own invite code from the bottom of the sidebar.
+- **Contact details** (the ⓘ button in a conversation) shows the full node
+  ID, a nickname field, and a 60-digit safety number. Compare the number with
+  your contact in person or on a call, then mark them as verified.
+- **Files** can be attached with the paper-clip button, dragged onto the
+  conversation, or pasted from the clipboard.
+- History, contacts, and received files are stored locally and survive
+  restarts. Received files are in Settings → Files → *Open received files
+  folder*.
+- `Ctrl+K` searches conversations and peers. `Esc` closes panels.
 
 ### Run from source on Windows
 
@@ -109,8 +130,41 @@ npm install
 npm start
 ```
 
-On first launch, enter a display name. Open Settings to configure a bootstrap
-peer, encrypted relay, STUN server, LAN discovery, or automatic port mapping.
+On first launch, enter a display name. The app then shows your invite code to
+share. Open Settings to configure a bootstrap peer, encrypted relay, STUN
+server, LAN discovery, automatic port mapping, read receipts, notifications,
+theme, or the largest file you accept.
+
+### Run two instances on one computer
+
+Each profile has its own identity, history, and settings:
+
+```bash
+CNP2P_PROFILE=alice npm start
+CNP2P_PROFILE=bob npm start
+```
+
+On Windows PowerShell, use `$env:CNP2P_PROFILE="alice"; npm start`. Set the
+listening port to `0` in one profile's Settings so the two nodes do not
+compete for port 9000. With LAN discovery enabled, they find each other within
+a few seconds.
+
+### Linux and WSL system libraries
+
+Electron needs the usual GTK and NSS desktop libraries. Minimal installs and
+WSL distributions often lack them. If `npm start` reports a missing `.so`
+file, install them:
+
+```bash
+# Debian and Ubuntu
+sudo apt install libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2 libxss1
+# Fedora
+sudo dnf install nss atk at-spi2-atk cups-libs gtk3 mesa-libgbm alsa-lib libXScrnSaver
+```
+
+If npm skipped Electron's download step, `npm start` reports that Electron
+failed to install. In that case run `node node_modules/electron/install.js`
+once.
 
 ### Build the Windows installer
 
@@ -124,6 +178,23 @@ The NSIS installer is written to `release/`. PyInstaller first bundles the
 Python networking engine, cryptography library, and SQLite support; Electron
 then embeds that executable. Users of the finished Windows build do not need
 Python or Node.js.
+
+### Build Linux packages
+
+```bash
+python -m pip install -e ".[desktop]"
+npm install
+npm run build:linux
+```
+
+This writes an AppImage and a `.deb` package to `release/`. Build each
+platform on that platform: PyInstaller cannot cross-compile the networking
+engine.
+
+Tagging a commit `v*` and pushing it runs
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml). The workflow tests on
+Windows and Linux, builds both installers, and attaches them to a GitHub
+release. Every push and pull request runs the tests.
 
 For a faster unpacked packaging check:
 
@@ -187,6 +258,35 @@ or run the equivalent module command:
 
 ```powershell
 python -m cnp2p --help
+```
+
+## Sharing images and files
+
+Files travel **directly** between the two devices, never through the relay:
+
+1. The sender announces the file with an encrypted `FILE_OFFER`. The offer
+   contains the name, size, SHA-256 digest, and a fresh random 256-bit file
+   key.
+2. The file is split into 32 KiB chunks. Each chunk is encrypted with
+   ChaCha20-Poly1305 under the file key and bound to its position, so chunks
+   cannot be reordered or swapped between transfers.
+3. The recipient writes chunks to a partial file and reports which chunks it
+   already has. An interrupted transfer therefore resumes where it stopped.
+4. When every chunk has arrived, the recipient verifies the SHA-256 digest
+   before the file appears in the conversation.
+
+If the recipient is offline, the file waits on the sender's device and is sent
+automatically the next time the two nodes see each other. Waiting files expire
+after seven days. Either side can cancel a transfer.
+
+The recipient's limit applies (100 MB by default, configurable in Settings).
+Images (PNG, JPEG, GIF, WebP, and BMP) are previewed inline. Click an image
+to open it full size.
+
+From the command line:
+
+```text
+/file 8ac441 "~/Pictures/holiday photo.jpg"
 ```
 
 ## First local chat
@@ -347,6 +447,9 @@ is the fallback when the gateway does not support mapping.
 | `/connect HOST:PORT` | Bootstrap through another running node. |
 | `/find NODE_ID` | Perform a distributed lookup for a complete node ID. |
 | `/msg ID_OR_PREFIX MESSAGE` | Encrypt and send a message. |
+| `/file ID_OR_PREFIX PATH` | Send an encrypted file directly to a peer. |
+| `/history ID_OR_PREFIX [N]` | Show the last N messages with a peer (default 20). |
+| `/verify ID_OR_PREFIX` | Show the safety number to compare with a peer. |
 | `/ping ID_OR_PREFIX` | Check direct reachability and round-trip time. |
 | `/offline` | Poll configured relays for queued messages immediately. |
 | `/nat` | Query the configured STUN server. |
@@ -403,7 +506,11 @@ Protocol frames are newline-delimited JSON over TCP:
 - `HELLO` exchanges authenticated peer records.
 - `FIND_NODE` and `NODES` perform distributed discovery.
 - `CHAT` carries an encrypted envelope; plaintext is never placed in the frame.
+  The encrypted payload is a text message or a delivered/read receipt.
 - `ACK` confirms direct receipt.
+- `FILE_OFFER`, `FILE_CHUNK`, and `FILE_COMPLETE` carry an encrypted file
+  transfer. The responses are `FILE_ACCEPT`, `FILE_CHUNK_OK`, `FILE_DONE`, or
+  `FILE_REJECT`.
 - `RELAY_STORE` queues signed ciphertext.
 - `RELAY_FETCH` and `RELAY_DELETE` require recipient signatures.
 
@@ -426,6 +533,13 @@ For each message:
 4. Ed25519 signs the sender, recipient, message ID, nonce, and ciphertext.
 5. The recipient verifies the signature before decrypting.
 
+Files use a separate random key per transfer. The key is delivered inside the
+encrypted file offer, so it is protected exactly like a chat message.
+
+The **safety number** shown in contact details is derived from both users'
+signing keys. Both people see the same 60 digits, and comparing them out of
+band detects a substituted key.
+
 The relay can observe metadata—including node IDs, message size, and timing—but
 does not possess the key required to decrypt the text. See
 [`docs/security-model.md`](docs/security-model.md) for the complete security
@@ -438,7 +552,17 @@ The directory supplied through `--data-dir` contains:
 | File | Purpose |
 | --- | --- |
 | `identity.json` | Long-term Ed25519 and X25519 private keys. |
+| `history.sqlite3` | Local conversation history, contacts, nicknames, and transfer state. |
+| `attachments/` | Received files; `attachments/sent/` keeps copies of sent files. |
 | `relay.sqlite3` | Ciphertext queue, only on relay-enabled nodes. |
+
+The desktop app keeps this directory under its user-data folder:
+`%APPDATA%\cnp2p-desktop\node` on Windows and `~/.config/cnp2p-desktop/node`
+on Linux. With `CNP2P_PROFILE=name` set, the folder is
+`cnp2p-desktop-name` instead.
+
+History and attachments are stored **unencrypted** on disk. Anyone who can
+read your user profile can read them.
 
 Do not commit data directories. The included `.gitignore` excludes common
 local directories such as `.cnp2p/` and `.venv/`.
@@ -471,17 +595,18 @@ The tests cover:
 - Message acknowledgements and duplicate suppression
 - Offline encrypted delivery through a persistent relay
 - Relay recovery after process restart
+- Encrypted payload kinds, receipts, and file-chunk binding
+- Persistent history, unread counts, status transitions, and contacts after restart
+- Delivered receipts via the relay, read receipts, and retrying failed messages
+- File transfer integrity, tamper rejection, resume, cancellation, size limits,
+  and automatic resend to a recipient who comes back online
 - UPnP service discovery, public endpoint advertisement, and mapping cleanup
 - XOR-distance routing behavior
 
-Optional syntax compilation check:
+Run the Python tests and a syntax check of the desktop scripts together:
 
 ```powershell
-python -m compileall -q src tests
-node --check desktop/main.js
-node --check desktop/preload.js
-node --check desktop/renderer/renderer.js
-npm audit
+npm test
 ```
 
 ## Project structure
@@ -491,9 +616,10 @@ p2p-chat/
 ├── docs/
 │   ├── project-proposal.md
 │   └── security-model.md
+├── .github/workflows/ci.yml
 ├── desktop/
 │   ├── assets/
-│   ├── renderer/
+│   ├── renderer/         # index.html, styles.css, util/state/chat/renderer.js
 │   ├── main.js
 │   └── preload.js
 ├── scripts/
@@ -510,7 +636,9 @@ p2p-chat/
 │   ├── node.py
 │   ├── protocol.py
 │   ├── relay.py
-│   └── routing.py
+│   ├── routing.py
+│   ├── store.py          # local history, contacts, transfer state
+│   └── transfer.py       # chunked encrypted file transfer
 ├── tests/
 ├── package.json
 ├── package-lock.json
@@ -564,6 +692,13 @@ cnp2p --name Bob --port 9102 --data-dir .demo/bob
 - Confirm the relay was started with `--relay-server`.
 - Check that the queue has not passed its seven-day expiry.
 
+### A file stays "Waiting for … to come online"
+
+The recipient could not be reached directly. Files never use the relay. The
+transfer resumes automatically when the recipient announces itself on the LAN,
+connects to you, or answers the periodic presence check. To retry sooner,
+reconnect through *Add contact* or ping the contact from its details panel.
+
 ### Windows firewall
 
 For a development node on TCP port 9101, an elevated PowerShell can add a rule:
@@ -600,9 +735,35 @@ This is an educational implementation, not a production messenger.
 - Replay suppression is maintained within an active cache window.
 - The application does not implement multi-device key management, key
   revocation, direct ICE hole punching, relay federation, traffic-analysis
-  resistance, file transfer, or group chat.
+  resistance, or group chat.
+- Files need a direct path between the two devices. With neither UPnP nor a
+  reachable port, files wait until both peers share a network.
+- Local history and received files are not encrypted at rest.
 - The protocol and cryptographic construction have not received an independent
   security audit.
 
 For the academic abstract and objectives, see
 [`docs/project-proposal.md`](docs/project-proposal.md).
+
+## Roadmap
+
+Planned features, roughly in order of value:
+
+1. **Group chats.** Small groups using pairwise fan-out: each message is
+   sealed separately for each member, with a signed member list.
+2. **Forward secrecy.** X3DH key agreement and the Double Ratchet replace the
+   static X25519 keys, so a stolen key cannot decrypt past messages.
+3. **UDP hole punching.** Direct connections between two NATed peers, using
+   the existing STUN support and a relay as the rendezvous point.
+4. **Message actions.** Replies, reactions, editing, and deleting for everyone.
+5. **Voice notes.** Recorded in the app and sent with the file-transfer
+   protocol.
+6. **Search.** Full-text search over local history with SQLite FTS5.
+7. **QR invites.** Scan an invite code from another screen or a phone.
+8. **Encryption at rest.** History and attachments protected with a key from
+   the OS keychain (DPAPI, libsecret, or Keychain).
+9. **Multi-device.** Link a second device to one identity, with key
+   revocation.
+10. **Relay discovery.** Relays advertise themselves in the DHT and federate
+    their queues.
+11. **Mobile client.** Reuse the protocol on Android and iOS.
