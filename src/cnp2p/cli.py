@@ -5,6 +5,7 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 import shlex
+import signal
 import sys
 import time
 
@@ -94,12 +95,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="ask a compatible gateway to map the node's TCP port automatically",
     )
     parser.add_argument("--no-lan", action="store_true", help="disable UDP LAN discovery")
+    parser.add_argument(
+        "--no-history",
+        action="store_true",
+        help="keep no local message history and refuse incoming files (recommended for relays)",
+    )
+    parser.add_argument(
+        "--daemon",
+        action="store_true",
+        help="run without the interactive prompt until stopped (for relays and system services)",
+    )
     return parser
 
 
 def render_peer(peer: Peer) -> str:
     age = max(0, int(time.time() - peer.last_seen))
     return f"{peer.short_id}  {peer.name:<16.16}  {peer.host}:{peer.port:<5}  seen {age}s ago"
+
+
+async def wait_for_shutdown() -> None:
+    """Block until SIGTERM or SIGINT; used when running as a service."""
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(signum, stop.set)
+        except (NotImplementedError, RuntimeError):
+            # Windows event loops lack signal handlers; Ctrl+C still raises
+            # KeyboardInterrupt, which main() handles.
+            pass
+    await stop.wait()
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -142,6 +167,7 @@ async def run(args: argparse.Namespace) -> int:
         relay_enabled=args.relay_server,
         relay_endpoints=args.relay,
         upnp=args.upnp,
+        history=not args.no_history,
         on_message=on_message,
         on_update=on_update,
     )
@@ -166,6 +192,12 @@ async def run(args: argparse.Namespace) -> int:
             print(f"Connected to {peer.name} ({peer.short_id}) at {host}:{port}")
         except (ConnectionError, NodeError, ValueError) as error:
             print(f"Could not bootstrap through {host}:{port}: {error}", file=sys.stderr)
+
+    if args.daemon:
+        await wait_for_shutdown()
+        print("Stopping node.")
+        await node.stop()
+        return 0
 
     print("Type /help for commands.")
     prompt_ready.set()
@@ -219,9 +251,10 @@ async def run(args: argparse.Namespace) -> int:
                     message = await node.send_file(parts[1], Path(parts[2]))
                     print(f"Sending {message['text']}; you will be told when it is delivered.")
                 elif command == "/history" and len(parts) in {2, 3}:
+                    if node.store is None:
+                        raise NodeError("message history is disabled (--no-history)")
                     peer = await node.resolve_peer(parts[1])
                     limit = int(parts[2]) if len(parts) == 3 else 20
-                    assert node.store is not None
                     for item in node.store.history(peer.node_id, limit=limit):
                         when = datetime.fromtimestamp(item["sent_at"]).strftime("%Y-%m-%d %H:%M")
                         who = "you" if item["direction"] == "outgoing" else peer.name

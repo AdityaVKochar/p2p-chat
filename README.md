@@ -375,11 +375,39 @@ cnp2p \
   --port 9100 \
   --data-dir .relay \
   --relay-server \
-  --no-lan
+  --no-lan \
+  --no-history \
+  --daemon
 ```
 
-Allow inbound TCP port `9100` in the server firewall and cloud security group.
-The relay queue is persisted in `.relay/relay.sqlite3`.
+`--daemon` runs the node without the interactive prompt until it receives
+SIGTERM or Ctrl+C, which suits a systemd service. `--no-history` keeps no
+local history and refuses incoming files, so strangers cannot fill the relay's
+disk. Allow inbound TCP port `9100` in the server firewall and cloud security
+group. The relay queue is persisted in `.relay/relay.sqlite3`.
+
+#### Deploy a relay on AWS
+
+[`scripts/aws/deploy-relay.sh`](scripts/aws/deploy-relay.sh) deploys a relay
+with the AWS CLI. It launches a `t4g.nano` running Amazon Linux 2023 and
+installs CNP2P from GitHub at the current commit. The relay runs as a hardened
+systemd service. The instance gets an Elastic IP, so its address stays the
+same across restarts. The security group opens the relay port to everyone and
+SSH only to your current IP.
+
+```bash
+./scripts/aws/deploy-relay.sh
+```
+
+The script prints the relay address and the SSH and log commands when it
+finishes. Settings come from environment variables (`AWS_REGION`,
+`INSTANCE_TYPE`, `RELAY_PORT`, `CNP2P_REF`, `ADMIN_CIDR`); the header of the
+script describes each one. A nano instance, Elastic IP, and 8 GB volume cost
+roughly US$7–8 per month. Remove everything with:
+
+```bash
+./scripts/aws/teardown-relay.sh
+```
 
 ### 2. Configure the clients
 
@@ -476,6 +504,8 @@ Quotes may be used when the shell-like command parser needs to preserve spaces:
 --stun HOST:PORT               STUN server used by /nat
 --upnp                         Request automatic TCP mapping from the router
 --no-lan                       Disable UDP LAN discovery
+--no-history                   Keep no local history; refuse incoming files
+--daemon                       Run without the prompt until SIGTERM/Ctrl+C
 ```
 
 Display the authoritative help for the installed version:

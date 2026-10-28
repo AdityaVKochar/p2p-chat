@@ -84,6 +84,7 @@ class NetworkTests(unittest.IsolatedAsyncioTestCase):
             data_dir=self.root / "relay",
             lan_discovery=False,
             relay_enabled=True,
+            history=False,
         )
         await relay.start()
         try:
@@ -107,6 +108,7 @@ class NetworkTests(unittest.IsolatedAsyncioTestCase):
                 data_dir=self.root / "relay",
                 lan_discovery=False,
                 relay_enabled=True,
+                history=False,
             )
             await relay.start()
             self.assertEqual(relay.relay_store.count(self.alice.node_id), 1)  # type: ignore[union-attr]
