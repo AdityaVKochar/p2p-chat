@@ -92,6 +92,12 @@ trap 'rm -f "$user_data"' EXIT
 cat > "$user_data" <<EOF
 #!/bin/bash
 set -euxo pipefail
+# A nano instance has 512 MB of RAM, which is not enough for dnf on its own.
+dd if=/dev/zero of=/swapfile bs=1M count=1024
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap defaults 0 0' >> /etc/fstab
 dnf install -y python3.11 python3.11-pip
 useradd --system --home-dir /var/lib/cnp2p --create-home --shell /sbin/nologin cnp2p
 python3.11 -m venv /opt/cnp2p
