@@ -108,24 +108,30 @@ def verify_envelope_signature(envelope: dict[str, Any]) -> Peer:
         raise CryptoError("encrypted envelope signature is invalid") from error
 
 
-def seal_message(
+PAYLOAD_KINDS = frozenset({"text", "file", "receipt"})
+
+
+def seal_payload(
     identity: NodeIdentity,
     sender: Peer,
     recipient: Peer,
     message_id: str,
-    text: str,
+    payload: dict[str, Any],
     *,
     sent_at: float | None = None,
 ) -> dict[str, Any]:
+    """Encrypt an arbitrary JSON payload for *recipient* inside a signed envelope."""
     if not recipient.is_authenticated:
         raise CryptoError("recipient does not have an authenticated encryption key")
+    if payload.get("kind", "text") not in PAYLOAD_KINDS:
+        raise CryptoError("unsupported payload kind")
     timestamp = time.time() if sent_at is None else sent_at
     recipient_public_key = X25519PublicKey.from_public_bytes(_b64decode(recipient.encryption_key, 32))
     shared_secret = identity.encryption_private_key.exchange(recipient_public_key)
     key = _derive_key(shared_secret, message_id, sender.node_id, recipient.node_id)
     nonce = os.urandom(12)
     aad = _associated_data(sender.node_id, recipient.node_id, message_id)
-    plaintext = canonical_json({"sent_at": timestamp, "text": text})
+    plaintext = canonical_json({**payload, "sent_at": timestamp})
     ciphertext = ChaCha20Poly1305(key).encrypt(nonce, plaintext, aad)
     envelope: dict[str, Any] = {
         "version": 1,
@@ -139,7 +145,23 @@ def seal_message(
     return envelope
 
 
-def open_message(identity: NodeIdentity, envelope: dict[str, Any]) -> tuple[Peer, str, float]:
+def seal_message(
+    identity: NodeIdentity,
+    sender: Peer,
+    recipient: Peer,
+    message_id: str,
+    text: str,
+    *,
+    sent_at: float | None = None,
+) -> dict[str, Any]:
+    return seal_payload(identity, sender, recipient, message_id, {"text": text}, sent_at=sent_at)
+
+
+def open_payload(identity: NodeIdentity, envelope: dict[str, Any]) -> tuple[Peer, dict[str, Any], float]:
+    """Verify and decrypt an envelope, returning the sender, payload, and send time.
+
+    Payloads without a ``kind`` were produced by earlier versions and are text.
+    """
     sender = verify_envelope_signature(envelope)
     recipient_id = validate_node_id(str(envelope["recipient_id"]))
     if recipient_id != identity.node_id:
@@ -156,15 +178,41 @@ def open_message(identity: NodeIdentity, envelope: dict[str, Any]) -> tuple[Peer
             aad,
         )
         payload = json.loads(plaintext.decode("utf-8"))
-        text = payload["text"]
-        sent_at = float(payload["sent_at"])
-        if not isinstance(text, str):
+        if not isinstance(payload, dict):
+            raise CryptoError("decrypted payload is invalid")
+        sent_at = float(payload.pop("sent_at"))
+        kind = payload.setdefault("kind", "text")
+        if kind not in PAYLOAD_KINDS:
+            raise CryptoError("unsupported payload kind")
+        if kind == "text" and not isinstance(payload.get("text"), str):
             raise CryptoError("decrypted message text is invalid")
-        return sender, text, sent_at
+        return sender, payload, sent_at
     except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError, InvalidTag) as error:
         if isinstance(error, CryptoError):
             raise
         raise CryptoError("encrypted message could not be authenticated or decrypted") from error
+
+
+def open_message(identity: NodeIdentity, envelope: dict[str, Any]) -> tuple[Peer, str, float]:
+    sender, payload, sent_at = open_payload(identity, envelope)
+    if payload["kind"] != "text":
+        raise CryptoError("encrypted envelope does not contain a text message")
+    return sender, payload["text"], sent_at
+
+
+def seal_chunk(key: bytes, transfer_id: str, index: int, recipient_id: str, data: bytes) -> tuple[str, str]:
+    """Encrypt one file chunk with the per-transfer key; returns (nonce, ciphertext) in base64."""
+    nonce = os.urandom(12)
+    aad = canonical_json({"index": index, "recipient_id": recipient_id, "transfer_id": transfer_id})
+    return _b64encode(nonce), _b64encode(ChaCha20Poly1305(key).encrypt(nonce, data, aad))
+
+
+def open_chunk(key: bytes, transfer_id: str, index: int, recipient_id: str, nonce: str, ciphertext: str) -> bytes:
+    aad = canonical_json({"index": index, "recipient_id": recipient_id, "transfer_id": transfer_id})
+    try:
+        return ChaCha20Poly1305(key).decrypt(_b64decode(nonce, 12), _b64decode(ciphertext), aad)
+    except InvalidTag as error:
+        raise CryptoError("file chunk could not be authenticated") from error
 
 
 def signed_relay_action(
@@ -205,3 +253,17 @@ def verify_relay_action(peer: Peer, payload: dict[str, Any], expected_action: st
         if isinstance(error, CryptoError):
             raise
         raise CryptoError("relay authorization signature is invalid") from error
+
+
+def safety_number(signing_key_a: str, signing_key_b: str) -> str:
+    """Return a symmetric 60-digit fingerprint for two identities.
+
+    Both users see the same number and can compare it out of band (in person
+    or on a call) to confirm that no one substituted a key.
+    """
+    keys = sorted([_b64decode(signing_key_a, 32), _b64decode(signing_key_b, 32)])
+    digest = hashes.Hash(hashes.SHA512())
+    digest.update(b"cnp2p-safety-number-v1\0" + keys[0] + keys[1])
+    material = digest.finalize()
+    groups = [int.from_bytes(material[index:index + 5], "big") % 100_000 for index in range(0, 60, 5)]
+    return " ".join(f"{group:05d}" for group in groups)

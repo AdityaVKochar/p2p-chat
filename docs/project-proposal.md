@@ -40,7 +40,9 @@ NAT-aware communication, and resilient message delivery.
 
 ## Implemented scope
 
-The prototype implements direct text messaging, persistent key-derived node
+The prototype implements direct text messaging, chunked end-to-end encrypted
+file and image transfer with resume and integrity checks, delivered and read
+receipts, persistent local history and contacts, safety-number verification, persistent key-derived node
 IDs, Ed25519 signatures, X25519 key agreement, ChaCha20-Poly1305 encryption,
 TCP request/response framing, delivery acknowledgements, retry behavior,
 duplicate suppression, manual bootstrap, UDP LAN discovery, iterative

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cnp2p"
-version = "0.3.0"
-description = "A small peer-to-peer chat and peer-discovery network"
+version = "0.4.0"
+description = "An encrypted peer-to-peer chat, file-sharing, and peer-discovery network"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

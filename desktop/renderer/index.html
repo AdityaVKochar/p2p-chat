@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: cnp2p-media:; media-src cnp2p-media:; connect-src 'none'">
     <title>CNP2P</title>
     <link rel="stylesheet" href="styles.css">
   </head>
@@ -12,88 +12,127 @@
       <aside class="sidebar">
         <header class="brand-row">
           <div class="brand-mark" aria-hidden="true">P</div>
-          <div>
+          <div class="brand-text">
             <h1>CNP2P</h1>
-            <p>Private peer chat</p>
+            <p class="connection-line"><span id="status-dot" class="status-dot offline"></span><span id="status-label">Offline</span></p>
           </div>
+          <button id="add-contact-button" class="icon-button" type="button" aria-label="Add contact" title="Add contact">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
           <button id="settings-button" class="icon-button" type="button" aria-label="Open settings" title="Settings">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.12 2.12-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.04 1.55V20.3h-3v-.09a1.7 1.7 0 0 0-1.04-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06-2.12-2.12.06-.06A1.7 1.7 0 0 0 7 15a1.7 1.7 0 0 0-1.55-1.04H5.3v-3h.15A1.7 1.7 0 0 0 7 9.92a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.12-2.12.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 11.7 4.7V4.6h3v.1a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.12 2.12-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.55 1.04h.15v3h-.15A1.7 1.7 0 0 0 19.4 15Z"/></svg>
           </button>
         </header>
 
-        <div class="connection-row">
-          <span id="status-dot" class="status-dot offline"></span>
-          <span id="status-label">Offline</span>
-          <span id="peer-count" class="peer-count">0 peers</span>
+        <div class="search-field">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 20-4.2-4.2M17 10.5a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z"/></svg>
+          <input id="search-input" type="search" autocomplete="off" placeholder="Search" aria-label="Search conversations and peers">
+          <kbd>Ctrl K</kbd>
         </div>
 
-        <form id="connect-form" class="connect-form">
-          <label for="connect-address">Connect to a peer</label>
-          <div class="inline-field">
-            <input id="connect-address" type="text" autocomplete="off" placeholder="192.168.1.20:9000">
-            <button type="submit" aria-label="Connect">Connect</button>
+        <div class="sidebar-scroll">
+          <div id="chats-label" class="section-label">Chats</div>
+          <div id="conversation-list" class="peer-list" role="list"></div>
+          <div id="peers-label" class="section-label">Peers on the network</div>
+          <div id="peer-list" class="peer-list" role="list"></div>
+          <div id="no-peers" class="no-peers">
+            <p>No peers yet</p>
+            <span>Share your invite code, add a contact, or wait for LAN discovery.</span>
+            <button id="empty-add-contact" class="secondary-button" type="button">Add contact</button>
           </div>
-        </form>
-
-        <div class="section-label">Peers</div>
-        <div id="peer-list" class="peer-list" role="list"></div>
-        <div id="no-peers" class="no-peers">
-          <p>No peers yet</p>
-          <span>Use a bootstrap address or wait for LAN discovery.</span>
         </div>
 
         <footer class="identity-card">
           <div class="avatar self-avatar" id="self-avatar">—</div>
           <div class="identity-text">
             <strong id="self-name">Not started</strong>
-            <button id="copy-id" type="button" disabled>Copy node ID</button>
+            <span id="self-id" class="mono">—</span>
           </div>
+          <button id="copy-invite" class="ghost-button" type="button" disabled title="Copy an invite code others can use to add you">Copy invite</button>
         </footer>
       </aside>
 
-      <main class="chat-panel">
+      <main id="chat-panel" class="chat-panel">
         <div id="empty-state" class="empty-state">
           <div class="empty-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24"><path d="M7 8h10M7 12h7m-9.5 7.2 1.1-3.3A8 8 0 1 1 20 11a8 8 0 0 1-12.7 6.5l-2.8 1.7Z"/></svg>
           </div>
           <h2>Your conversations</h2>
-          <p>Choose a peer to send an end-to-end encrypted message.</p>
+          <p>Messages and files are end-to-end encrypted and sent directly between devices.</p>
+          <div class="empty-actions">
+            <button id="empty-copy-invite" class="primary-button" type="button">Copy my invite code</button>
+            <button id="empty-add" class="secondary-button" type="button">Add a contact</button>
+          </div>
         </div>
 
         <section id="conversation" class="conversation hidden" aria-label="Conversation">
           <header class="conversation-header">
-            <div id="selected-avatar" class="avatar">?</div>
-            <div class="conversation-title">
-              <h2 id="selected-name">Peer</h2>
-              <p><span id="selected-endpoint"></span><span class="secure-label">Encrypted</span></p>
+            <div class="avatar-wrap">
+              <div id="selected-avatar" class="avatar">?</div>
+              <span id="selected-presence" class="presence-dot"></span>
             </div>
-            <button id="ping-button" class="secondary-button" type="button">Ping</button>
+            <div class="conversation-title">
+              <h2><span id="selected-name">Peer</span><span id="selected-verified" class="verified-badge hidden" title="Safety number verified">Verified</span></h2>
+              <p><span id="selected-status"></span><span class="secure-label">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V8a5 5 0 0 1 10 0v3M6 11h12v9H6z"/></svg>End-to-end encrypted</span></p>
+            </div>
+            <div class="header-actions">
+              <button id="header-attach" class="icon-button" type="button" aria-label="Send files" title="Send files">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 11.5-7.8 7.8a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/></svg>
+              </button>
+              <button id="info-button" class="icon-button" type="button" aria-label="Contact details" title="Contact details">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-10v6m0-9.5v.5"/></svg>
+              </button>
+            </div>
           </header>
           <div id="messages" class="messages" aria-live="polite"></div>
           <form id="message-form" class="composer">
+            <button id="attach-button" class="composer-button" type="button" aria-label="Attach files" title="Attach files">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 11.5-7.8 7.8a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/></svg>
+            </button>
             <textarea id="message-input" rows="1" maxlength="4096" placeholder="Write a message" aria-label="Message"></textarea>
+            <span id="char-counter" class="char-counter hidden"></span>
             <button id="send-button" class="send-button" type="submit" aria-label="Send message">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 17 8-17 8 3-8-3-8Zm3 8h14"/></svg>
             </button>
           </form>
+          <div id="drop-overlay" class="drop-overlay hidden">
+            <div>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M5 15v4h14v-4"/></svg>
+              <strong>Drop to send</strong>
+              <span>Files are encrypted and sent directly to this peer.</span>
+            </div>
+          </div>
         </section>
       </main>
     </div>
 
     <div id="scrim" class="scrim hidden"></div>
-    <aside id="settings-panel" class="settings-panel" aria-hidden="true">
+
+    <aside id="settings-panel" class="drawer" aria-hidden="true" aria-labelledby="settings-title">
       <header>
         <div>
-          <h2>Settings</h2>
-          <p>Identity and network</p>
+          <h2 id="settings-title">Settings</h2>
+          <p>Profile, network, and privacy</p>
         </div>
-        <button id="close-settings" class="icon-button" type="button" aria-label="Close settings">×</button>
+        <button class="icon-button close-drawer" type="button" aria-label="Close settings">×</button>
       </header>
       <form id="settings-form">
+        <h3>Profile</h3>
         <div class="field-group">
           <label for="setting-name">Display name</label>
           <input id="setting-name" name="name" maxlength="64" required placeholder="Your name">
         </div>
+        <div class="field-group">
+          <label for="setting-invite">Your invite code</label>
+          <div class="inline-field">
+            <input id="setting-invite" class="mono" readonly>
+            <button id="settings-copy-invite" class="field-button" type="button">Copy</button>
+          </div>
+          <span>Others paste this into “Add contact” to reach you.</span>
+        </div>
+
+        <h3>Network</h3>
         <div class="field-group compact-field">
           <label for="setting-port">Listening port</label>
           <input id="setting-port" name="port" type="number" min="0" max="65535" required>
@@ -101,12 +140,12 @@
         </div>
         <div class="field-group">
           <label for="setting-bootstrap">Bootstrap node</label>
-          <input id="setting-bootstrap" name="bootstrap" placeholder="host:port">
+          <input id="setting-bootstrap" name="bootstrap" placeholder="host:port or invite code">
         </div>
         <div class="field-group">
           <label for="setting-relay">Relay</label>
           <input id="setting-relay" name="relay" placeholder="host:port">
-          <span>Used for NAT fallback and offline delivery.</span>
+          <span>Used for NAT fallback and offline text delivery.</span>
         </div>
         <div class="field-group">
           <label for="setting-stun">STUN server</label>
@@ -125,26 +164,134 @@
           <input id="setting-upnp" name="upnp" type="checkbox">
           <i></i>
         </label>
+
+        <h3>Privacy and notifications</h3>
+        <label class="toggle-row">
+          <span><strong>Send read receipts</strong><small>Let contacts see when you have read their messages</small></span>
+          <input id="setting-receipts" name="readReceipts" type="checkbox">
+          <i></i>
+        </label>
+        <label class="toggle-row">
+          <span><strong>Desktop notifications</strong><small>Notify about new messages while the window is in the background</small></span>
+          <input id="setting-notifications" name="notifications" type="checkbox">
+          <i></i>
+        </label>
+
+        <h3>Appearance</h3>
+        <div class="segmented" role="radiogroup" aria-label="Theme">
+          <label><input type="radio" name="theme" value="system"><span>System</span></label>
+          <label><input type="radio" name="theme" value="light"><span>Light</span></label>
+          <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+        </div>
+
+        <h3>Files</h3>
+        <div class="field-group compact-field">
+          <label for="setting-max-file">Largest incoming file (MB)</label>
+          <input id="setting-max-file" name="maxFileMb" type="number" min="1" max="2048" required>
+        </div>
+        <button id="open-attachments" class="secondary-button wide" type="button">Open received files folder</button>
+
         <div class="settings-spacer"></div>
         <button id="save-settings" class="primary-button" type="submit">Save and restart node</button>
       </form>
     </aside>
 
+    <aside id="contact-panel" class="drawer" aria-hidden="true" aria-labelledby="contact-title">
+      <header>
+        <div>
+          <h2 id="contact-title">Contact</h2>
+          <p>Identity and verification</p>
+        </div>
+        <button class="icon-button close-drawer" type="button" aria-label="Close contact details">×</button>
+      </header>
+      <div class="contact-hero">
+        <div id="contact-avatar" class="avatar large-avatar">?</div>
+        <strong id="contact-name">Peer</strong>
+        <span id="contact-presence"></span>
+      </div>
+      <div class="field-group">
+        <label for="contact-nickname">Nickname</label>
+        <div class="inline-field">
+          <input id="contact-nickname" maxlength="64" placeholder="Only visible to you">
+          <button id="contact-save-nickname" class="field-button" type="button">Save</button>
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Safety number</label>
+        <div id="contact-safety" class="safety-number mono"></div>
+        <span>Compare this number with your contact in person or on a call. If it matches, mark them as verified.</span>
+      </div>
+      <label class="toggle-row">
+        <span><strong>Verified</strong><small>You compared safety numbers with this contact</small></span>
+        <input id="contact-verified" type="checkbox">
+        <i></i>
+      </label>
+      <dl class="contact-facts">
+        <dt>Node ID</dt><dd id="contact-id" class="mono selectable"></dd>
+        <dt>Endpoint</dt><dd id="contact-endpoint" class="mono"></dd>
+        <dt>Relay</dt><dd id="contact-relay"></dd>
+      </dl>
+      <div class="contact-actions">
+        <button id="contact-copy-id" class="secondary-button" type="button">Copy ID</button>
+        <button id="contact-ping" class="secondary-button" type="button">Ping</button>
+        <button id="contact-clear" class="danger-button" type="button">Clear conversation</button>
+      </div>
+    </aside>
+
+    <div id="add-contact-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="add-contact-title">
+      <form id="connect-form" class="modal-card">
+        <h2 id="add-contact-title">Add a contact</h2>
+        <p>Paste an invite code, or enter the address of any node on the network.</p>
+        <label for="connect-address">Invite code or address</label>
+        <input id="connect-address" type="text" autocomplete="off" class="mono" placeholder="cnp2p:…@192.168.1.20:9000">
+        <div class="modal-invite">
+          <span>Your invite code</span>
+          <code id="modal-invite" class="mono selectable">—</code>
+          <button id="modal-copy-invite" class="ghost-button" type="button">Copy</button>
+        </div>
+        <div class="modal-actions">
+          <button id="cancel-connect" class="secondary-button" type="button">Cancel</button>
+          <button id="submit-connect" class="primary-button" type="submit">Connect</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true" aria-label="Image preview">
+      <img id="lightbox-image" alt="">
+      <div class="lightbox-bar">
+        <span id="lightbox-name"></span>
+        <button id="lightbox-save" class="ghost-button" type="button">Save as…</button>
+        <button id="lightbox-reveal" class="ghost-button" type="button">Show in folder</button>
+        <button id="lightbox-close" class="ghost-button" type="button">Close</button>
+      </div>
+    </div>
+
     <div id="onboarding" class="onboarding hidden">
       <div class="onboarding-card">
         <div class="brand-mark large">P</div>
-        <h2>Start private chat</h2>
-        <p>Choose a name. Your cryptographic identity is created on this device.</p>
-        <form id="onboarding-form">
-          <label for="onboarding-name">Display name</label>
-          <input id="onboarding-name" maxlength="64" required autofocus placeholder="Your name">
-          <button class="primary-button" type="submit">Start</button>
-        </form>
+        <div id="onboarding-step-name">
+          <h2>Start private chat</h2>
+          <p>Choose a name. Your cryptographic identity is created on this device and never leaves it.</p>
+          <form id="onboarding-form">
+            <label for="onboarding-name">Display name</label>
+            <input id="onboarding-name" maxlength="64" required autofocus placeholder="Your name">
+            <button class="primary-button" type="submit">Continue</button>
+          </form>
+        </div>
+        <div id="onboarding-step-invite" class="hidden">
+          <h2>You're online</h2>
+          <p>Share this invite code with a friend so they can add you. Peers on the same network appear automatically.</p>
+          <code id="onboarding-invite" class="invite-box mono selectable">Starting…</code>
+          <button id="onboarding-copy" class="secondary-button wide" type="button">Copy invite code</button>
+          <button id="onboarding-done" class="primary-button" type="button">Open CNP2P</button>
+        </div>
       </div>
     </div>
 
     <div id="toast-region" class="toast-region" aria-live="polite"></div>
+    <script src="util.js"></script>
+    <script src="state.js"></script>
+    <script src="chat.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>
-

@@ -15,3 +15,5 @@ relay.sqlite3*
 node_modules/
 release/
 npm-debug.log*
+history.sqlite3*
+attachments/
