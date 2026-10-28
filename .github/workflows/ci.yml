@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -37,7 +38,9 @@ jobs:
 
   build:
     name: Build ${{ matrix.target }}
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Pull requests build installers too, so reviewers can download and try
+    # them; only version tags publish a release.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     needs: [test, desktop-check]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -71,9 +74,11 @@ jobs:
             release/*.AppImage
             release/*.deb
           if-no-files-found: error
+          retention-days: 14
 
   release:
     name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
